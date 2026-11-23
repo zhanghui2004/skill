@@ -1,7 +1,11 @@
 import fs from "fs/promises";
 import path from "path";
 import matter from "gray-matter";
-import { getSkillScanRoots } from "./paths";
+import {
+  getPackageRoot,
+  getSkillScanRoots,
+  getWritableRoot,
+} from "./paths";
 import type {
   SkillDetail,
   SkillMetadata,
@@ -76,7 +80,7 @@ async function scanOneRoot(
       out.push({
         name,
         description,
-        path: path.relative(process.cwd(), skillPath).split(path.sep).join("/"),
+        path: path.relative(getPackageRoot(), skillPath).split(path.sep).join("/"),
         folder,
         absolutePath: skillPath,
         scope,
@@ -212,7 +216,16 @@ export async function writeSkillRelativeFile(
   relativePath: string,
   content: string
 ): Promise<void> {
-  const dir = path.dirname(skill.absolutePath);
+  let dir = path.dirname(skill.absolutePath);
+  const pkg = path.resolve(getPackageRoot());
+  const writable = path.resolve(getWritableRoot());
+  // Hosted package root is read-only — write project skills into writable overlay
+  if (
+    path.resolve(dir).startsWith(pkg + path.sep) &&
+    pkg !== writable
+  ) {
+    dir = path.join(writable, ".cursor", "skills", skill.folder);
+  }
   const target = path.resolve(dir, relativePath);
   if (!target.startsWith(dir + path.sep) && target !== dir) {
     throw new Error("拒绝写入 skill 目录外文件");

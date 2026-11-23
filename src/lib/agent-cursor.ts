@@ -1,8 +1,21 @@
+import path from "path";
 import { Agent } from "@cursor/sdk";
 import { getCursorKey, getMaxIterations } from "./providers";
-import { getProjectRoot } from "./paths";
+import { getPackageRoot, getWritableRoot } from "./paths";
 import { buildCursorUserMessage } from "./llm";
 import type { ToolEvent } from "./types";
+
+function pathResolveUnique(dirs: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const d of dirs) {
+    const r = path.resolve(d);
+    if (seen.has(r)) continue;
+    seen.add(r);
+    out.push(r);
+  }
+  return out;
+}
 
 export interface CursorAgentResult {
   finalAnswer: string;
@@ -29,13 +42,15 @@ export async function runCursorAgent(options: {
     );
   }
 
-  const cwd = getProjectRoot();
+  const cwd = getWritableRoot();
+  const pkg = getPackageRoot();
   const guidance = [
     options.systemSkill,
     "",
     "执行要求：",
     "- 这是多轮工具任务：请实际读取 Skill 内 prompts/scripts，必要时运行 python 脚本。",
-    "- 工作区根目录即当前 cwd；输出文件写到工作区内。",
+    "- 工作区根目录即当前 cwd（可写）；输出文件写到工作区内。",
+    "- 打包的 Skill 可能在只读包目录；可读路径已加入 dirs。",
     "- 不要假装已经抓取网页；失败时说明错误。",
     options.skillHintPath
       ? `- 相关 Skill 目录：${options.skillHintPath}`
@@ -48,14 +63,16 @@ export async function runCursorAgent(options: {
   const toolEvents: ToolEvent[] = [];
   let callCounter = 0;
 
+  const dirs = pathResolveUnique([cwd, pkg]);
+
   const agent = await Agent.create({
     apiKey,
     model: { id: options.model },
     // Enable default local tools (read/shell/edit…) — NOT tools: []
     local: {
       cwd,
-      // Extra dirs help skill discovery in multi-root setups
-      dirs: [cwd],
+      // Writable cwd + package (skills) when they differ (hosted /tmp vs /var/task)
+      dirs,
     },
   });
 
