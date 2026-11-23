@@ -163,16 +163,40 @@ export async function executeLabTool(
         if (!ALLOWED_BINARIES.has(bin)) {
           return `拒绝：仅允许 ${[...ALLOWED_BINARIES].join("/")}，收到「${bin || "(空)"}」`;
         }
+        // Block inline code eval that would inherit secrets from the process env
+        const dangerousFlags = new Set([
+          "-e",
+          "-p",
+          "-c",
+          "--eval",
+          "--print",
+          "--check",
+        ]);
+        for (const a of argv.slice(1)) {
+          if (dangerousFlags.has(a)) {
+            return `拒绝：不允许 ${bin} 的内联执行标志（${a}）`;
+          }
+        }
         try {
           assertWorkspacePathArgs(argv);
         } catch (e) {
           return `拒绝路径：${e instanceof Error ? e.message : String(e)}`;
         }
+        const childEnv = { ...process.env };
+        for (const k of Object.keys(childEnv)) {
+          if (
+            /API_KEY|SECRET|TOKEN|PASSWORD|AUTHORIZATION|SKILL_LAB_CURSOR/i.test(
+              k
+            )
+          ) {
+            delete childEnv[k];
+          }
+        }
         const { stdout, stderr } = await execFileAsync(bin, argv.slice(1), {
           cwd: root,
           timeout: 120000,
           maxBuffer: 2 * 1024 * 1024,
-          env: { ...process.env },
+          env: childEnv,
         });
         return redact(
           [`$ ${argv.join(" ")}`, stdout || "", stderr ? `STDERR:\n${stderr}` : ""]

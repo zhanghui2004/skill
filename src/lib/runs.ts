@@ -3,8 +3,26 @@ import path from "path";
 import { getRunsDir } from "./paths";
 import type { RunRecord, RunResponse } from "./types";
 
+/** Matches createRunId(); rejects path segments and traversal. */
+const RUN_ID_RE = /^run_[a-zA-Z0-9]+_[a-zA-Z0-9]+$/;
+
 export function createRunId(): string {
   return `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function resolveRunRecordPath(runId: string): string {
+  if (!RUN_ID_RE.test(runId)) {
+    throw new Error("无效的 runId");
+  }
+  const dir = path.resolve(getRunsDir());
+  const file = path.resolve(dir, `${runId}.json`);
+  if (file !== dir && !file.startsWith(dir + path.sep)) {
+    throw new Error("runId 路径越界");
+  }
+  if (path.basename(file) !== `${runId}.json`) {
+    throw new Error("无效的 runId");
+  }
+  return file;
 }
 
 export async function saveRunRecord(
@@ -12,7 +30,7 @@ export async function saveRunRecord(
 ): Promise<string> {
   const dir = getRunsDir();
   await fs.mkdir(dir, { recursive: true });
-  const file = path.join(dir, `${record.runId}.json`);
+  const file = resolveRunRecordPath(record.runId);
   // Ensure no API keys sneak into persisted JSON
   const safe = JSON.parse(
     JSON.stringify(record, (k, v) => {
@@ -31,7 +49,7 @@ export async function saveRunRecord(
 
 export async function loadRunRecord(runId: string): Promise<RunRecord | null> {
   try {
-    const file = path.join(getRunsDir(), `${runId}.json`);
+    const file = resolveRunRecordPath(runId);
     const raw = await fs.readFile(file, "utf8");
     return JSON.parse(raw) as RunRecord;
   } catch {
@@ -43,7 +61,7 @@ export async function listRunRecords(limit = 20): Promise<RunRecord[]> {
   try {
     const dir = getRunsDir();
     const files = (await fs.readdir(dir))
-      .filter((f) => f.endsWith(".json"))
+      .filter((f) => f.endsWith(".json") && RUN_ID_RE.test(f.slice(0, -5)))
       .sort()
       .reverse()
       .slice(0, limit);

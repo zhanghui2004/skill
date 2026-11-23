@@ -60,7 +60,6 @@ export async function runPipeline(options: {
   mode: RunMode;
   provider?: RunProvider;
   skillName?: string;
-  baseUrl?: string;
   model?: string;
 }): Promise<RunResponse> {
   const runId = createRunId();
@@ -74,8 +73,8 @@ export async function runPipeline(options: {
   const prompt = options.prompt?.trim() ?? "";
   const mode: RunMode = options.mode === "manual" ? "manual" : "auto";
   const provider = resolveProvider(options.provider);
+  // baseUrl comes only from server env/defaults inside getProviderStatus
   const providerStatus = getProviderStatus(provider, {
-    baseUrl: options.baseUrl,
     model: options.model,
   });
 

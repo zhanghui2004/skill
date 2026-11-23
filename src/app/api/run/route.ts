@@ -17,7 +17,6 @@ export async function POST(request: Request) {
       mode?: RunMode;
       provider?: RunProvider;
       skillName?: string;
-      baseUrl?: string;
       model?: string;
       autoMatch?: boolean;
     };
@@ -29,15 +28,17 @@ export async function POST(request: Request) {
     const skillName =
       typeof body.skillName === "string" ? body.skillName : undefined;
 
+    // Intentionally ignore any client baseUrl — server AI_BASE_URL / defaults only.
     const result = await runPipeline({
       prompt,
       mode,
       provider,
       skillName,
-      baseUrl: body.baseUrl,
-      model: body.model,
+      model: typeof body.model === "string" ? body.model : undefined,
     });
-    return NextResponse.json(result);
+    return NextResponse.json(result, {
+      headers: { "cache-control": "private, no-store" },
+    });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return NextResponse.json(

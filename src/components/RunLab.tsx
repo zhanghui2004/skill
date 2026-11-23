@@ -107,7 +107,6 @@ export function RunLab() {
           mode: autoMatch ? "auto" : "manual",
           provider: provider === "auto" ? "auto" : provider,
           skillName: autoMatch ? undefined : skillName,
-          baseUrl: provider === "openai" ? baseUrl || undefined : undefined,
           model: model || undefined,
         }),
       });
@@ -182,15 +181,10 @@ export function RunLab() {
 
         {provider === "openai" && (
           <div className="space-y-2 rounded border border-zinc-200 bg-white p-3">
-            <label className="block text-xs font-medium text-zinc-700">
-              AI_BASE_URL
-              <input
-                className="mt-1 w-full rounded border border-zinc-300 px-2 py-1.5 text-sm"
-                value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
-                placeholder="https://api.openai.com/v1"
-              />
-            </label>
+            <p className="text-xs text-zinc-600">
+              AI_BASE_URL（仅服务端配置，只读）：{" "}
+              <code className="rounded bg-zinc-100 px-1">{baseUrl || "—"}</code>
+            </p>
             <label className="block text-xs font-medium text-zinc-700">
               AI_MODEL
               <input

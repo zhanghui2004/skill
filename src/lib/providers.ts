@@ -44,9 +44,13 @@ export function resolveProvider(
   return "cursor";
 }
 
+/**
+ * baseUrl is server-only (AI_BASE_URL / defaults). Never take it from the client —
+ * that would enable SSRF with the host Bearer key.
+ */
 export function getProviderStatus(
   provider: "cursor" | "openai",
-  overrides?: { baseUrl?: string; model?: string }
+  overrides?: { model?: string }
 ): ProviderStatus {
   const envModel = env("AI_MODEL");
   const envBase = env("AI_BASE_URL");
@@ -55,17 +59,13 @@ export function getProviderStatus(
     return {
       provider: "cursor",
       hasApiKey: Boolean(getCursorKey()),
-      baseUrl: overrides?.baseUrl || "https://api.cursor.com",
+      baseUrl: "https://api.cursor.com",
       model: overrides?.model || envModel || "composer-2.5",
       label: "Cursor Agent",
     };
   }
 
-  // Prefer OpenAI-compatible defaults unless env clearly points at a gateway
-  const baseUrl =
-    overrides?.baseUrl ||
-    envBase ||
-    "https://api.openai.com/v1";
+  const baseUrl = envBase || "https://api.openai.com/v1";
   const model =
     overrides?.model ||
     (envModel && !/^composer/i.test(envModel) ? envModel : undefined) ||
