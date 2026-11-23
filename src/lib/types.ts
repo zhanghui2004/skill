@@ -88,7 +88,7 @@ export interface RunRequest {
   mode: RunMode;
   provider?: RunProvider;
   skillName?: string;
-  baseUrl?: string;
+  /** Model display override only; baseUrl is server AI_BASE_URL / defaults. */
   model?: string;
 }
 
