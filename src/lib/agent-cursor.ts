@@ -11,6 +11,9 @@ import { buildCursorUserMessage } from "./llm";
 import { redactText, redactValue } from "./redact";
 import type { ToolEvent } from "./types";
 
+/** Leave headroom under route maxDuration (120s) for JSON error responses. */
+const CURSOR_RUN_TIMEOUT_MS = 100_000;
+
 function pathResolveUnique(dirs: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -21,6 +24,32 @@ function pathResolveUnique(dirs: string[]): string[] {
     out.push(r);
   }
   return out;
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => {
+      reject(
+        new Error(
+          `${label} 超时（>${Math.round(ms / 1000)}s）。托管环境限制较长 Cursor 多轮工具运行；请缩短任务或改用 OpenAI-compatible Provider。`
+        )
+      );
+    }, ms);
+    promise.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
+  });
 }
 
 export interface CursorAgentResult {
@@ -65,6 +94,7 @@ export async function runCursorAgent(options: {
     "- 打包的 Skill 可能在只读包目录；可读路径已加入 dirs。",
     "- 不要打印或回显任何 API Key / 环境变量 / Authorization 头。",
     "- 不要假装已经抓取网页；失败时说明错误。",
+    "- 尽量在有限步骤内完成；优先跑脚本并给出结果。",
     options.skillHintPath
       ? `- 相关 Skill 目录：${options.skillHintPath}`
       : "",
@@ -78,57 +108,74 @@ export async function runCursorAgent(options: {
 
   const dirs = pathResolveUnique([cwd, pkg]);
 
-  const agent = await Agent.create({
-    apiKey,
-    model: { id: options.model },
-    // Constrain built-ins: lab needs read/edit/shell for skill scripts, not web/MCP/subagents
-    tools: ["shell", "read", "edit", "grep", "glob", "ls"],
-    disallowedTools: [
-      "webFetch",
-      "webSearch",
-      "mcp",
-      "task",
-      "generateImage",
-      "applyAgentDiff",
-      "askQuestion",
-      "delete",
-      "readLints",
-      "semSearch",
-    ],
-    local: {
-      cwd,
-      // Writable cwd + package (skills) when they differ (hosted /tmp vs /var/task)
-      dirs,
-      store,
-    },
-  });
+  const agent = await withTimeout(
+    Agent.create({
+      apiKey,
+      model: { id: options.model },
+      // Constrain built-ins: lab needs read/edit/shell for skill scripts, not web/MCP/subagents
+      tools: ["shell", "read", "edit", "grep", "glob", "ls"],
+      disallowedTools: [
+        "webFetch",
+        "webSearch",
+        "mcp",
+        "task",
+        "generateImage",
+        "applyAgentDiff",
+        "askQuestion",
+        "delete",
+        "readLints",
+        "semSearch",
+      ],
+      local: {
+        cwd,
+        // Writable cwd + package (skills) when they differ (hosted /tmp vs /var/task)
+        dirs,
+        store,
+      },
+    }),
+    20_000,
+    "Cursor Agent.create"
+  );
 
   try {
-    const run = await agent.send(message);
-    for await (const event of run.stream()) {
-      if (event.type === "tool_call") {
-        callCounter += 1;
-        const rawArgs = (event as { args?: unknown }).args;
-        const rawResult = (event as { result?: unknown }).result;
-        toolEvents.push({
-          callId: String(
-            (event as { call_id?: string }).call_id || `cursor_${callCounter}`
-          ),
-          name: String((event as { name?: string }).name || "tool"),
-          status:
-            (event as { status?: string }).status === "completed"
-              ? "completed"
-              : (event as { status?: string }).status === "error"
-                ? "error"
-                : "started",
-          args: redactValue(rawArgs) as ToolEvent["args"],
-          result: redactValue(rawResult),
-          timestamp: Date.now(),
-        });
-      }
-    }
+    const run = await withTimeout(
+      agent.send(message),
+      20_000,
+      "Cursor Agent.send"
+    );
 
-    const result = await run.wait();
+    const streamWork = (async () => {
+      for await (const event of run.stream()) {
+        if (event.type === "tool_call") {
+          callCounter += 1;
+          const rawArgs = (event as { args?: unknown }).args;
+          const rawResult = (event as { result?: unknown }).result;
+          toolEvents.push({
+            callId: String(
+              (event as { call_id?: string }).call_id || `cursor_${callCounter}`
+            ),
+            name: String((event as { name?: string }).name || "tool"),
+            status:
+              (event as { status?: string }).status === "completed"
+                ? "completed"
+                : (event as { status?: string }).status === "error"
+                  ? "error"
+                  : "started",
+            args: redactValue(rawArgs) as ToolEvent["args"],
+            result: redactValue(rawResult),
+            timestamp: Date.now(),
+          });
+        }
+      }
+      return run.wait();
+    })();
+
+    const result = await withTimeout(
+      streamWork,
+      CURSOR_RUN_TIMEOUT_MS,
+      "Cursor Agent 执行"
+    );
+
     if (result.status === "error") {
       const raw = result.error?.message || "未知错误";
       if (/Custom system prompt is not enabled|system prompt/i.test(raw)) {

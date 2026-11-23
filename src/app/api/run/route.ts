@@ -1,18 +1,54 @@
 import { NextResponse } from "next/server";
 import { runPipeline } from "@/lib/pipeline";
 import { requireViewer } from "@/lib/require-viewer";
-import type { RunMode, RunProvider } from "@/lib/types";
+import { redactText } from "@/lib/redact";
+import type { RunMode, RunProvider, RunResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+/** Keep under typical hosted proxy limits so we can return JSON before a gateway HTML timeout. */
+export const maxDuration = 120;
+
+function failedJson(
+  error: string,
+  status = 500,
+  extra?: Partial<RunResponse>
+): NextResponse {
+  const body: RunResponse = {
+    runId: extra?.runId ?? "error",
+    status: "failed",
+    steps: extra?.steps ?? [],
+    finalAnswer: extra?.finalAnswer ?? null,
+    selectedSkill: extra?.selectedSkill ?? null,
+    provider: extra?.provider ?? "cursor",
+    toolEvents: extra?.toolEvents ?? [],
+    explanation: extra?.explanation,
+    error: redactText(error),
+  };
+  return NextResponse.json(body, {
+    status,
+    headers: {
+      "cache-control": "private, no-store",
+      "content-type": "application/json; charset=utf-8",
+    },
+  });
+}
 
 export async function POST(request: Request) {
-  const viewer = await requireViewer(request);
-  if (viewer instanceof Response) return viewer;
-
   try {
-    const body = (await request.json()) as {
+    const viewer = await requireViewer(request);
+    if (viewer instanceof Response) {
+      // Normalize identity failures to JSON (some hosts may wrap HTML)
+      const ctype = viewer.headers.get("content-type") || "";
+      if (ctype.includes("application/json")) return viewer;
+      const text = await viewer.text().catch(() => "");
+      return failedJson(
+        `未授权（HTTP ${viewer.status}）：${text.slice(0, 200) || "需要登录"}`,
+        viewer.status === 401 || viewer.status === 403 ? viewer.status : 401
+      );
+    }
+
+    let body: {
       prompt?: string;
       mode?: RunMode;
       provider?: RunProvider;
@@ -20,6 +56,11 @@ export async function POST(request: Request) {
       model?: string;
       autoMatch?: boolean;
     };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return failedJson("请求体必须是 JSON", 400);
+    }
 
     const prompt = typeof body.prompt === "string" ? body.prompt : "";
     const autoMatch = body.autoMatch !== false && body.mode !== "manual";
@@ -37,22 +78,13 @@ export async function POST(request: Request) {
       model: typeof body.model === "string" ? body.model : undefined,
     });
     return NextResponse.json(result, {
-      headers: { "cache-control": "private, no-store" },
+      headers: {
+        "cache-control": "private, no-store",
+        "content-type": "application/json; charset=utf-8",
+      },
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return NextResponse.json(
-      {
-        runId: "error",
-        status: "failed",
-        steps: [],
-        finalAnswer: null,
-        selectedSkill: null,
-        provider: "cursor",
-        toolEvents: [],
-        error: message,
-      },
-      { status: 500 }
-    );
+    return failedJson(message, 500);
   }
 }

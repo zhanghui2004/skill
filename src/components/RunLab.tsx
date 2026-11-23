@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { StepTimeline } from "./StepTimeline";
+import { readResponseJson } from "@/lib/api-client";
 import type {
   PipelineStep,
   ProviderStatus,
@@ -40,10 +41,14 @@ export function RunLab() {
 
   useEffect(() => {
     const q = searchParams.get("skill");
-    fetch("/api/skills")
-      .then((r) => r.json())
-      .then((data: { skills?: SkillMetadata[] }) => {
-        const list = data.skills ?? [];
+    fetch("/api/skills", { headers: { Accept: "application/json" } })
+      .then((r) => readResponseJson<{ skills?: SkillMetadata[] }>(r))
+      .then((parsed) => {
+        if (!parsed.ok) {
+          setSkills([]);
+          return;
+        }
+        const list = parsed.data.skills ?? [];
         setSkills(list);
         if (q && list.some((s) => s.name === q || s.folder === q)) {
           setSkillName(q);
@@ -52,10 +57,14 @@ export function RunLab() {
       })
       .catch(() => setSkills([]));
 
-    fetch("/api/providers")
-      .then((r) => r.json())
-      .then((data: { providers?: ProviderStatus[] }) => {
-        const list = data.providers ?? [];
+    fetch("/api/providers", { headers: { Accept: "application/json" } })
+      .then((r) => readResponseJson<{ providers?: ProviderStatus[] }>(r))
+      .then((parsed) => {
+        if (!parsed.ok) {
+          setProviders([]);
+          return;
+        }
+        const list = parsed.data.providers ?? [];
         setProviders(list);
         const cursor = list.find((p) => p.provider === "cursor");
         const openai = list.find((p) => p.provider === "openai");
@@ -100,7 +109,7 @@ export function RunLab() {
     try {
       const res = await fetch("/api/run", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({
           prompt,
           autoMatch,
@@ -110,7 +119,13 @@ export function RunLab() {
           model: model || undefined,
         }),
       });
-      const data = (await res.json()) as RunResponse;
+      const parsed = await readResponseJson<RunResponse>(res);
+      if (!parsed.ok) {
+        setError(parsed.error);
+        setRunStatus("failed");
+        return;
+      }
+      const data = parsed.data;
       setSteps(data.steps ?? []);
       setFinalAnswer(data.finalAnswer);
       setSelectedSkill(data.selectedSkill);
