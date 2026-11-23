@@ -126,6 +126,16 @@ export function getRunsDir(): string {
   return path.join(getWritableRoot(), "data", "runs");
 }
 
+/**
+ * Cursor SDK local agent store must NOT use ~/.cursor/projects/... on hosted
+ * sandboxes (home is often unwritable). Keep it under the writable root.
+ */
+export function getSdkAgentStoreDir(): string {
+  const dir = path.join(getWritableRoot(), "sdk-agent-store");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 export function getPersonalSkillsDir(): string {
   const override = env("SKILL_LAB_PERSONAL_DIR");
   if (override) return path.resolve(override);

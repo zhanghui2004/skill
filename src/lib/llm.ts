@@ -1,4 +1,6 @@
-import { Agent } from "@cursor/sdk";
+import fs from "fs";
+import { Agent, JsonlLocalAgentStore } from "@cursor/sdk";
+import { getSdkAgentStoreDir, getWritableRoot } from "./paths";
 
 export type LlmProvider = "cursor" | "openai";
 
@@ -118,13 +120,16 @@ async function chatViaCursorSdk(options: {
   const message = buildCursorUserMessage(options.system, options.user);
 
   try {
+    const cwd = getWritableRoot();
+    const storeDir = getSdkAgentStoreDir();
+    fs.mkdirSync(storeDir, { recursive: true });
     const result = await Agent.prompt(message, {
       apiKey: options.apiKey,
       model: { id: options.model },
       tools: [],
       local: {
-        // Isolated scratch cwd — do not touch ~/.cursor/skills-cursor
-        cwd: process.cwd(),
+        cwd,
+        store: new JsonlLocalAgentStore(storeDir),
       },
     });
 

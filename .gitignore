@@ -38,6 +38,9 @@ yarn-error.log*
 /data/runs/*
 !/data/runs/.gitkeep
 
+# Cursor SDK local agent store (writable workspace)
+/sdk-agent-store/
+
 # blog fetch demo outputs
 /waitbutwhy.com/
 /**/中译-*.md

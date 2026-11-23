@@ -1,7 +1,12 @@
+import fs from "fs";
 import path from "path";
-import { Agent } from "@cursor/sdk";
+import { Agent, JsonlLocalAgentStore } from "@cursor/sdk";
 import { getCursorKey, getMaxIterations } from "./providers";
-import { getPackageRoot, getWritableRoot } from "./paths";
+import {
+  getPackageRoot,
+  getSdkAgentStoreDir,
+  getWritableRoot,
+} from "./paths";
 import { buildCursorUserMessage } from "./llm";
 import { redactText, redactValue } from "./redact";
 import type { ToolEvent } from "./types";
@@ -30,6 +35,7 @@ export interface CursorAgentResult {
  * Real Cursor Agent run with a constrained local toolset.
  * Skill instructions folded into user message — never systemPrompt.
  * Tool args/results returned to clients are redacted (same as OpenAI path).
+ * Agent store lives under writable TMPDIR (not ~/.cursor/projects).
  */
 export async function runCursorAgent(options: {
   systemSkill: string;
@@ -46,6 +52,10 @@ export async function runCursorAgent(options: {
 
   const cwd = getWritableRoot();
   const pkg = getPackageRoot();
+  const storeDir = getSdkAgentStoreDir();
+  fs.mkdirSync(storeDir, { recursive: true });
+  const store = new JsonlLocalAgentStore(storeDir);
+
   const guidance = [
     options.systemSkill,
     "",
@@ -89,6 +99,7 @@ export async function runCursorAgent(options: {
       cwd,
       // Writable cwd + package (skills) when they differ (hosted /tmp vs /var/task)
       dirs,
+      store,
     },
   });
 

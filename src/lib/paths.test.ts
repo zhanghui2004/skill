@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   getPackageRoot,
   getRunsDir,
+  getSdkAgentStoreDir,
   getSkillScanRoots,
   getWritableRoot,
   resetWritableRootCache,
@@ -58,6 +59,10 @@ describe("writable roots", () => {
     expect(root).toBe(path.join(tmp, "skill-lab"));
     expect(getRunsDir().startsWith(root)).toBe(true);
     expect(getPackageRoot()).toBe(path.resolve("/var/task"));
+    const store = getSdkAgentStoreDir();
+    expect(store).toBe(path.join(root, "sdk-agent-store"));
+    expect(fs.existsSync(store)).toBe(true);
+    expect(store.includes(`${path.sep}.cursor${path.sep}`)).toBe(false);
   });
 
   it("still discovers bundled skills when writable is /tmp (hosted)", async () => {
