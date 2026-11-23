@@ -1,0 +1,2 @@
+# fetch_blog.py uses Python stdlib only (urllib).
+# Optional richer HTML→text can be added later; keep stdlib for Windows portability.
