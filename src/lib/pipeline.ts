@@ -64,10 +64,10 @@ export async function runPipeline(options: {
 }): Promise<RunResponse> {
   const runId = createRunId();
   const steps: PipelineStep[] = [];
-  let finalAnswer: string | null = null;
+  const finalAnswer: string | null = null;
   let selectedSkill: string | null = null;
   let error: string | undefined;
-  let toolEvents: ToolEvent[] = [];
+  const toolEvents: ToolEvent[] = [];
   let status: RunResponse["status"] = "completed";
 
   const prompt = options.prompt?.trim() ?? "";
@@ -348,7 +348,7 @@ export async function runPipeline(options: {
     )
   );
 
-  // 8. Execute multi-turn
+  // 8. Execute — deferred so HTTP can return steps 1–7 before gateway timeout.
   if (!providerStatus.hasApiKey) {
     const msg =
       provider === "cursor"
@@ -381,18 +381,115 @@ export async function runPipeline(options: {
     });
   }
 
+  steps.push(
+    step(
+      "execute",
+      "执行",
+      "running",
+      provider === "cursor"
+        ? "后台执行 Cursor Agent（异步，避免网关 502）；请轮询运行状态。"
+        : "后台执行 OpenAI 兼容 Agent（异步）；请轮询运行状态。",
+      {
+        provider,
+        model: providerStatus.model,
+        baseUrl: providerStatus.baseUrl,
+        async: true,
+      }
+    )
+  );
+
+  // Persist "running" so the client can poll /api/runs/[runId] while Step8 finishes.
+  return persist({
+    runId,
+    status: "running",
+    steps,
+    finalAnswer: null,
+    selectedSkill,
+    provider,
+    toolEvents: [],
+    prompt,
+    mode,
+  });
+}
+
+/**
+ * Finish Step8 for a run left in status "running" by {@link runPipeline}.
+ * Intended to run via next/server `after()` so the HTTP response can return first.
+ */
+export async function continuePipelineExecute(runId: string): Promise<void> {
+  const { loadRunRecord } = await import("./runs");
+  const record = await loadRunRecord(runId);
+  if (!record || record.status !== "running") return;
+
+  const steps = [...record.steps];
+  const execIdx = steps.findIndex((s) => s.id === "execute");
+  if (execIdx < 0 || steps[execIdx].status !== "running") return;
+
+  const provider = record.provider;
+  const providerStatus = getProviderStatus(provider, {
+    model: (steps[execIdx].data as { model?: string } | undefined)?.model,
+  });
+  const selectedSkill = record.selectedSkill;
+  if (!selectedSkill) {
+    steps[execIdx] = step("execute", "执行", "error", "缺少 selectedSkill。");
+    await persist({
+      runId,
+      status: "failed",
+      steps,
+      finalAnswer: null,
+      selectedSkill: null,
+      provider,
+      toolEvents: [],
+      error: "缺少 selectedSkill",
+      prompt: record.prompt,
+      mode: record.mode,
+    });
+    return;
+  }
+
+  const detail = await loadSkillDetail(selectedSkill);
+  if (!detail) {
+    steps[execIdx] = step(
+      "execute",
+      "执行",
+      "error",
+      `无法读取「${selectedSkill}」。`
+    );
+    await persist({
+      runId,
+      status: "failed",
+      steps,
+      finalAnswer: null,
+      selectedSkill,
+      provider,
+      toolEvents: [],
+      error: `无法加载 Skill「${selectedSkill}」。`,
+      prompt: record.prompt,
+      mode: record.mode,
+    });
+    return;
+  }
+
+  let finalAnswer: string | null = null;
+  let toolEvents: ToolEvent[] = [];
+  let error: string | undefined;
+
   try {
     if (provider === "cursor") {
       const result = await runCursorAgent({
         systemSkill: detail.body,
-        userPrompt: prompt,
+        userPrompt: record.prompt,
         model: providerStatus.model,
         skillHintPath: path.dirname(detail.absolutePath),
       });
       finalAnswer = result.finalAnswer;
       toolEvents = result.toolEvents;
-      steps.push(
-        step("execute", "执行", "done", "Cursor Agent 多轮工具执行完成。", {
+      steps[execIdx] = step(
+        "execute",
+        "执行",
+        "done",
+        "Cursor Agent 多轮工具执行完成。",
+        {
           provider: "cursor",
           iterations: result.iterations,
           toolCallCount: result.toolEvents.filter((e) => e.status === "completed")
@@ -400,46 +497,45 @@ export async function runPipeline(options: {
           contextLength: result.contextLength,
           responseLength: result.responseLength,
           toolEvents: result.toolEvents,
-        })
+        }
       );
     } else {
       const result = await runOpenAICompatibleAgent({
         systemSkill: detail.body,
-        userPrompt: prompt,
+        userPrompt: record.prompt,
         baseUrl: providerStatus.baseUrl,
         model: providerStatus.model,
       });
       finalAnswer = result.finalAnswer;
       toolEvents = result.toolEvents;
-      steps.push(
-        step(
-          "execute",
-          "执行",
-          "done",
-          "OpenAI 兼容 Agent 多轮 tools 循环完成。",
-          {
-            provider: "openai",
-            iterations: result.iterations,
-            toolCallCount: result.toolEvents.filter((e) => e.status === "completed")
-              .length,
-            contextLength: result.contextLength,
-            responseLength: result.responseLength,
-            toolEvents: result.toolEvents,
-          }
-        )
+      steps[execIdx] = step(
+        "execute",
+        "执行",
+        "done",
+        "OpenAI 兼容 Agent 多轮 tools 循环完成。",
+        {
+          provider: "openai",
+          iterations: result.iterations,
+          toolCallCount: result.toolEvents.filter((e) => e.status === "completed")
+            .length,
+          contextLength: result.contextLength,
+          responseLength: result.responseLength,
+          toolEvents: result.toolEvents,
+        }
       );
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     error = msg;
-    status = "failed";
-    steps.push(step("execute", "执行", "error", "Agent 执行失败。", { error: msg }));
+    steps[execIdx] = step("execute", "执行", "error", "Agent 执行失败。", {
+      error: msg,
+    });
   }
 
   const explanation = buildExplanation({
-    prompt,
+    prompt: record.prompt,
     provider,
-    mode,
+    mode: record.mode,
     selectedSkill,
     why: steps.find((s) => s.id === "select")?.explanation || "",
     steps,
@@ -447,7 +543,7 @@ export async function runPipeline(options: {
     finalAnswer,
   });
 
-  return persist({
+  await persist({
     runId,
     status: error ? "failed" : "completed",
     steps,
@@ -457,8 +553,8 @@ export async function runPipeline(options: {
     toolEvents,
     explanation,
     error,
-    prompt,
-    mode,
+    prompt: record.prompt,
+    mode: record.mode,
   });
 }
 

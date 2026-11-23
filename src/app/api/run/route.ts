@@ -1,13 +1,16 @@
-import { NextResponse } from "next/server";
-import { runPipeline } from "@/lib/pipeline";
+import { after, NextResponse } from "next/server";
+import {
+  continuePipelineExecute,
+  runPipeline,
+} from "@/lib/pipeline";
 import { requireViewer } from "@/lib/require-viewer";
 import { redactText } from "@/lib/redact";
 import type { RunMode, RunProvider, RunResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-/** Keep under typical hosted proxy limits so we can return JSON before a gateway HTML timeout. */
-export const maxDuration = 120;
+/** Covers async Step8 via after(); the HTTP response itself returns after steps 1–7. */
+export const maxDuration = 300;
 
 function failedJson(
   error: string,
@@ -38,7 +41,6 @@ export async function POST(request: Request) {
   try {
     const viewer = await requireViewer(request);
     if (viewer instanceof Response) {
-      // Normalize identity failures to JSON (some hosts may wrap HTML)
       const ctype = viewer.headers.get("content-type") || "";
       if (ctype.includes("application/json")) return viewer;
       const text = await viewer.text().catch(() => "");
@@ -69,7 +71,7 @@ export async function POST(request: Request) {
     const skillName =
       typeof body.skillName === "string" ? body.skillName : undefined;
 
-    // Intentionally ignore any client baseUrl — server AI_BASE_URL / defaults only.
+    // Steps 1–7 sync → JSON quickly; Step8 continues after the response.
     const result = await runPipeline({
       prompt,
       mode,
@@ -77,6 +79,20 @@ export async function POST(request: Request) {
       skillName,
       model: typeof body.model === "string" ? body.model : undefined,
     });
+
+    if (result.status === "running") {
+      const runId = result.runId;
+      after(async () => {
+        try {
+          await continuePipelineExecute(runId);
+        } catch (e) {
+          // Best-effort: continuePipelineExecute persists failures itself;
+          // log-free swallow to avoid crashing the after callback.
+          void e;
+        }
+      });
+    }
+
     return NextResponse.json(result, {
       headers: {
         "cache-control": "private, no-store",

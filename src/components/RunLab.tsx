@@ -94,6 +94,55 @@ export function RunLab() {
     ["done", "skipped", "error"].includes(s.status)
   ).length;
 
+  function applyRun(data: RunResponse) {
+    setSteps(data.steps ?? []);
+    setFinalAnswer(data.finalAnswer);
+    setSelectedSkill(data.selectedSkill);
+    setToolEvents(data.toolEvents ?? []);
+    setExplanation(data.explanation ?? null);
+    setRunId(data.runId);
+    setResolvedProvider(data.provider);
+    setRunStatus(
+      data.status === "running"
+        ? "running"
+        : data.status === "failed"
+          ? "failed"
+          : "completed"
+    );
+    if (data.error) setError(data.error);
+  }
+
+  async function pollRunUntilDone(id: string) {
+    const started = Date.now();
+    const maxMs = 5 * 60 * 1000;
+    while (Date.now() - started < maxMs) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const res = await fetch(`/api/runs/${encodeURIComponent(id)}`, {
+        headers: { Accept: "application/json" },
+      });
+      const parsed = await readResponseJson<{ run?: RunResponse; error?: string }>(
+        res
+      );
+      if (!parsed.ok) {
+        setError(parsed.error);
+        setRunStatus("failed");
+        return;
+      }
+      const run = parsed.data.run;
+      if (!run) {
+        setError(parsed.data.error || "找不到运行记录");
+        setRunStatus("failed");
+        return;
+      }
+      applyRun(run);
+      if (run.status !== "running") return;
+    }
+    setError(
+      "等待 Step8 超时：托管环境可能仍在后台执行，或已被平台中断。请稍后打开运行报告，或改用 OpenAI-compatible。"
+    );
+    setRunStatus("failed");
+  }
+
   async function onRun() {
     setLoading(true);
     setError(null);
@@ -109,7 +158,10 @@ export function RunLab() {
     try {
       const res = await fetch("/api/run", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
         body: JSON.stringify({
           prompt,
           autoMatch,
@@ -126,15 +178,10 @@ export function RunLab() {
         return;
       }
       const data = parsed.data;
-      setSteps(data.steps ?? []);
-      setFinalAnswer(data.finalAnswer);
-      setSelectedSkill(data.selectedSkill);
-      setToolEvents(data.toolEvents ?? []);
-      setExplanation(data.explanation ?? null);
-      setRunId(data.runId);
-      setResolvedProvider(data.provider);
-      setRunStatus(data.status === "failed" ? "failed" : "completed");
-      if (data.error) setError(data.error);
+      applyRun(data);
+      if (data.status === "running" && data.runId) {
+        await pollRunUntilDone(data.runId);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setRunStatus("failed");
@@ -270,8 +317,18 @@ export function RunLab() {
           disabled={loading || !prompt.trim()}
           className="rounded bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:cursor-not-allowed disabled:bg-zinc-400"
         >
-          {loading ? "运行中…" : "开始运行"}
+          {loading
+            ? runStatus === "running"
+              ? "Step8 后台执行中…"
+              : "运行中…"
+            : "开始运行"}
         </button>
+        {loading && runStatus === "running" && (
+          <p className="text-xs text-zinc-500">
+            步骤 1–7 已返回；Cursor/兼容 Agent 在后台继续，页面自动轮询状态（避免网关
+            502）。
+          </p>
+        )}
 
         <div className="rounded border border-zinc-200 bg-white p-3 text-sm">
           <div className="flex flex-wrap items-center gap-2">
