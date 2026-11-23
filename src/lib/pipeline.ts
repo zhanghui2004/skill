@@ -387,7 +387,7 @@ export async function runPipeline(options: {
         systemSkill: detail.body,
         userPrompt: prompt,
         model: providerStatus.model,
-        skillHintPath: path.dirname(detail.path),
+        skillHintPath: path.dirname(detail.absolutePath),
       });
       finalAnswer = result.finalAnswer;
       toolEvents = result.toolEvents;

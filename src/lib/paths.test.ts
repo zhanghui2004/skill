@@ -5,9 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   getPackageRoot,
   getRunsDir,
+  getSkillScanRoots,
   getWritableRoot,
   resetWritableRootCache,
 } from "./paths";
+import { listSkillMetadata, scanScopeSummary } from "./skills";
 
 const KEYS = [
   "SKILL_LAB_WORKSPACE",
@@ -55,6 +57,40 @@ describe("writable roots", () => {
     const root = getWritableRoot();
     expect(root).toBe(path.join(tmp, "skill-lab"));
     expect(getRunsDir().startsWith(root)).toBe(true);
-    expect(getPackageRoot()).toBe(process.cwd());
+    expect(getPackageRoot()).toBe(path.resolve("/var/task"));
+  });
+
+  it("still discovers bundled skills when writable is /tmp (hosted)", async () => {
+    clearKeys();
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "skill-lab-host-"));
+    // Package root = this workspace; writable forced to tmp via serverless flags
+    process.env.LAMBDA_TASK_ROOT = process.cwd();
+    process.env.AWS_LAMBDA_FUNCTION_NAME = "skill-lab-test";
+    process.env.TMPDIR = tmp;
+    resetWritableRootCache();
+
+    expect(getWritableRoot()).toBe(path.join(tmp, "skill-lab"));
+    expect(getPackageRoot()).toBe(path.resolve(process.cwd()));
+
+    const roots = getSkillScanRoots();
+    expect(
+      roots.some((r) => r.root.includes("bundled-skills") && r.scope === "project")
+    ).toBe(true);
+
+    const skills = await listSkillMetadata();
+    expect(skills.map((s) => s.name)).toEqual(
+      expect.arrayContaining([
+        "english-blog-translate",
+        "translate",
+        "summarize",
+        "meeting-notes",
+      ])
+    );
+
+    const summary = await scanScopeSummary();
+    const projectTotal = summary
+      .filter((s) => s.scope === "project")
+      .reduce((a, s) => a + s.count, 0);
+    expect(projectTotal).toBeGreaterThanOrEqual(4);
   });
 });

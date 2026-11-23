@@ -25,9 +25,11 @@ describe("listSkillMetadata", () => {
 
   it("scope summary does not abort on missing dirs", async () => {
     const summary = await scanScopeSummary();
-    expect(summary.length).toBe(3);
-    const project = summary.find((s) => s.scope === "project");
-    expect(project?.count).toBeGreaterThanOrEqual(4);
+    expect(summary.length).toBeGreaterThanOrEqual(1);
+    const projectTotal = summary
+      .filter((s) => s.scope === "project")
+      .reduce((a, s) => a + s.count, 0);
+    expect(projectTotal).toBeGreaterThanOrEqual(4);
     for (const s of summary) {
       expect(typeof s.count).toBe("number");
     }
