@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 import { promisify } from "util";
 import { getProjectRoot, safeJoinWorkspace } from "./paths";
+import { redactText, scrubbedEnv } from "./redact";
 
 const execFileAsync = promisify(execFile);
 
@@ -76,13 +77,6 @@ export const OPENAI_AGENT_TOOLS = [
     },
   },
 ];
-
-function redact(s: string): string {
-  return s
-    .replace(/sk-[a-zA-Z0-9]{10,}/g, "[redacted]")
-    .replace(/crsr_[a-zA-Z0-9]+/g, "[redacted]")
-    .replace(/Bearer\s+[^\s]+/gi, "Bearer [redacted]");
-}
 
 /** Split a simple argv string; reject shell metacharacters. */
 function parseArgvFromCommand(command: string): string[] | null {
@@ -182,23 +176,13 @@ export async function executeLabTool(
         } catch (e) {
           return `拒绝路径：${e instanceof Error ? e.message : String(e)}`;
         }
-        const childEnv = { ...process.env };
-        for (const k of Object.keys(childEnv)) {
-          if (
-            /API_KEY|SECRET|TOKEN|PASSWORD|AUTHORIZATION|SKILL_LAB_CURSOR/i.test(
-              k
-            )
-          ) {
-            delete childEnv[k];
-          }
-        }
         const { stdout, stderr } = await execFileAsync(bin, argv.slice(1), {
           cwd: root,
           timeout: 120000,
           maxBuffer: 2 * 1024 * 1024,
-          env: childEnv,
+          env: scrubbedEnv(),
         });
-        return redact(
+        return redactText(
           [`$ ${argv.join(" ")}`, stdout || "", stderr ? `STDERR:\n${stderr}` : ""]
             .filter(Boolean)
             .join("\n")
@@ -216,7 +200,7 @@ export async function executeLabTool(
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return `工具错误：${redact(msg)}`;
+    return `工具错误：${redactText(msg)}`;
   }
 }
 

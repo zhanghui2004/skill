@@ -77,10 +77,15 @@ async function scanOneRoot(
         folder
       );
       const lines = raw.split(/\r?\n/).length;
+      // Prefer paths relative to package for clients; keep absolutePath for server I/O only
+      const rel = path
+        .relative(getPackageRoot(), skillPath)
+        .split(path.sep)
+        .join("/");
       out.push({
         name,
         description,
-        path: path.relative(getPackageRoot(), skillPath).split(path.sep).join("/"),
+        path: rel.startsWith("..") ? skillPath : rel,
         folder,
         absolutePath: skillPath,
         scope,
