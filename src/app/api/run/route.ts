@@ -72,25 +72,43 @@ export async function POST(request: Request) {
       typeof body.skillName === "string" ? body.skillName : undefined;
 
     // Steps 1–7 sync → JSON quickly; Step8 continues after the response.
-    const result = await runPipeline({
-      prompt,
-      mode,
-      provider,
-      skillName,
-      model: typeof body.model === "string" ? body.model : undefined,
-    });
+    let result;
+    try {
+      result = await runPipeline({
+        prompt,
+        mode,
+        provider,
+        skillName,
+        model: typeof body.model === "string" ? body.model : undefined,
+      });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      // DB connect/migrate failures must surface as JSON (not a dropped connection).
+      const status = /数据库/.test(message) ? 503 : 500;
+      return failedJson(message, status);
+    }
 
     if (result.status === "running") {
       const runId = result.runId;
-      after(async () => {
-        try {
-          await continuePipelineExecute(runId);
-        } catch (e) {
-          // Best-effort: continuePipelineExecute persists failures itself;
-          // log-free swallow to avoid crashing the after callback.
-          void e;
-        }
-      });
+      try {
+        after(async () => {
+          try {
+            await continuePipelineExecute(runId);
+          } catch (e) {
+            // Best-effort: continuePipelineExecute persists failures itself;
+            // log-free swallow to avoid crashing the after callback.
+            void e;
+          }
+        });
+      } catch (e) {
+        // Host may not support after(); fail the run record rather than hang.
+        const message = e instanceof Error ? e.message : String(e);
+        return failedJson(
+          `无法调度后台 Step8：${message}`,
+          500,
+          { runId, status: "failed", steps: result.steps, provider: result.provider }
+        );
+      }
     }
 
     return NextResponse.json(result, {

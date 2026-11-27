@@ -1,10 +1,12 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
+import { continuePipelineExecute } from "@/lib/pipeline";
 import { loadRunRecord, toRunResponse } from "@/lib/runs";
 import { requireViewer } from "@/lib/require-viewer";
 import { redactText } from "@/lib/redact";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
 function json(
   body: unknown,
@@ -44,6 +46,21 @@ export async function GET(
     if (!record) {
       return json({ error: "找不到运行记录" }, 404);
     }
+
+    // Resume Step8 if create's after() was dropped by the host.
+    if (record.status === "running") {
+      const exec = record.steps.find((s) => s.id === "execute");
+      const claimedAt = (exec?.data as { claimedAt?: string } | undefined)
+        ?.claimedAt;
+      if (exec?.status === "running" && !claimedAt) {
+        try {
+          after(() => continuePipelineExecute(runId));
+        } catch {
+          void continuePipelineExecute(runId);
+        }
+      }
+    }
+
     return json({ run: toRunResponse(record) });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

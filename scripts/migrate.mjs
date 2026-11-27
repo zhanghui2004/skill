@@ -11,8 +11,14 @@ if (url === "" || files.length === 0) {
 }
 // The session lock needs a direct connection: DATABASE_URL may go through a
 // transaction pooler, which would keep the lock after this script exits.
+const connectionString = process.env.DATABASE_URL_UNPOOLED?.trim() || url;
+const local =
+  /localhost|127\.0\.0\.1/i.test(connectionString) ||
+  connectionString.includes("sslmode=disable");
 const client = new pg.Client({
-  connectionString: process.env.DATABASE_URL_UNPOOLED?.trim() || url,
+  connectionString,
+  connectionTimeoutMillis: 15_000,
+  ...(local ? {} : { ssl: { rejectUnauthorized: false } }),
 });
 await client.connect();
 try {

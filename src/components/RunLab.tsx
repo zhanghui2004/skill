@@ -118,7 +118,9 @@ export function RunLab() {
     while (Date.now() - started < maxMs) {
       await new Promise((r) => setTimeout(r, 1500));
       const res = await fetch(`/api/runs/${encodeURIComponent(id)}`, {
+        credentials: "same-origin",
         headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(30_000),
       });
       const parsed = await readResponseJson<{ run?: RunResponse; error?: string }>(
         res
@@ -158,10 +160,12 @@ export function RunLab() {
     try {
       const res = await fetch("/api/run", {
         method: "POST",
+        credentials: "same-origin",
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
         },
+        signal: AbortSignal.timeout(90_000),
         body: JSON.stringify({
           prompt,
           autoMatch,
@@ -183,7 +187,19 @@ export function RunLab() {
         await pollRunUntilDone(data.runId);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const name = e instanceof Error ? e.name : "";
+      const msg = e instanceof Error ? e.message : String(e);
+      if (name === "TimeoutError" || name === "AbortError") {
+        setError(
+          "请求 /api/run 超时：冷启动或数据库未响应。请重试；若反复失败请检查托管 Postgres。"
+        );
+      } else if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+        setError(
+          "无法连接 /api/run（网络中断、网关断开或服务崩溃）。请重试一次；若仍失败多为服务端未返回响应。"
+        );
+      } else {
+        setError(msg);
+      }
       setRunStatus("failed");
     } finally {
       setLoading(false);

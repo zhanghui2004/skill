@@ -11,11 +11,13 @@ const nextConfig: NextConfig = {
       "./bundled-skills/**/*",
       "./.cursor/skills/**/*",
       "./.agents/skills/**/*",
+      "./migrations/**/*",
     ],
     "/api/:path*": [
       "./bundled-skills/**/*",
       "./.cursor/skills/**/*",
       "./.agents/skills/**/*",
+      "./migrations/**/*",
     ],
     "/lab": ["./bundled-skills/**/*", "./.cursor/skills/**/*"],
     "/skills": ["./bundled-skills/**/*", "./.cursor/skills/**/*"],

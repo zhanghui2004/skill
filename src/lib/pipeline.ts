@@ -417,13 +417,30 @@ export async function runPipeline(options: {
  * Intended to run via next/server `after()` so the HTTP response can return first.
  */
 export async function continuePipelineExecute(runId: string): Promise<void> {
-  const { loadRunRecord } = await import("./runs");
+  const { loadRunRecord, saveRunRecord } = await import("./runs");
   const record = await loadRunRecord(runId);
   if (!record || record.status !== "running") return;
 
   const steps = [...record.steps];
   const execIdx = steps.findIndex((s) => s.id === "execute");
   if (execIdx < 0 || steps[execIdx].status !== "running") return;
+
+  const prior = (steps[execIdx].data || {}) as { claimedAt?: string };
+  // already claimed by after() or an earlier poll-resume
+  if (prior.claimedAt) return;
+
+  // Claim the run so after() and poll-resume cannot double-start Step8.
+  const claimData = {
+    ...prior,
+    claimedAt: new Date().toISOString(),
+  };
+  steps[execIdx] = {
+    ...steps[execIdx],
+    data: claimData,
+    explanation: "Step8 已认领，正在执行 Agent…",
+  };
+  record.steps = steps;
+  await saveRunRecord(record);
 
   const provider = record.provider;
   const providerStatus = getProviderStatus(provider, {
