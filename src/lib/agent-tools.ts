@@ -180,7 +180,7 @@ export async function executeLabTool(
           cwd: root,
           timeout: 120000,
           maxBuffer: 2 * 1024 * 1024,
-          env: scrubbedEnv(),
+          env: scrubbedEnv() as NodeJS.ProcessEnv,
         });
         return redactText(
           [`$ ${argv.join(" ")}`, stdout || "", stderr ? `STDERR:\n${stderr}` : ""]

@@ -8,7 +8,7 @@ import {
   getWritableRoot,
 } from "./paths";
 import { buildCursorUserMessage } from "./llm";
-import { redactText, redactValue } from "./redact";
+import { redactText, redactValue, withScrubbedProcessEnv } from "./redact";
 import type { ToolEvent } from "./types";
 
 /** Leave headroom under route maxDuration (120s) for JSON error responses. */
@@ -108,104 +108,107 @@ export async function runCursorAgent(options: {
 
   const dirs = pathResolveUnique([cwd, pkg]);
 
-  const agent = await withTimeout(
-    Agent.create({
-      apiKey,
-      model: { id: options.model },
-      // Constrain built-ins: lab needs read/edit/shell for skill scripts, not web/MCP/subagents
-      tools: ["shell", "read", "edit", "grep", "glob", "ls"],
-      disallowedTools: [
-        "webFetch",
-        "webSearch",
-        "mcp",
-        "task",
-        "generateImage",
-        "applyAgentDiff",
-        "askQuestion",
-        "delete",
-        "readLints",
-        "semSearch",
-      ],
-      local: {
-        cwd,
-        // Writable cwd + package (skills) when they differ (hosted /tmp vs /var/task)
-        dirs,
-        store,
-      },
-    }),
-    20_000,
-    "Cursor Agent.create"
-  );
-
-  try {
-    const run = await withTimeout(
-      agent.send(message),
+  // Cursor shell inherits process.env; scrub host secrets for the whole SDK run.
+  return withScrubbedProcessEnv(async () => {
+    const agent = await withTimeout(
+      Agent.create({
+        apiKey,
+        model: { id: options.model },
+        // Constrain built-ins: lab needs read/edit/shell for skill scripts, not web/MCP/subagents
+        tools: ["shell", "read", "edit", "grep", "glob", "ls"],
+        disallowedTools: [
+          "webFetch",
+          "webSearch",
+          "mcp",
+          "task",
+          "generateImage",
+          "applyAgentDiff",
+          "askQuestion",
+          "delete",
+          "readLints",
+          "semSearch",
+        ],
+        local: {
+          cwd,
+          // Writable cwd + package (skills) when they differ (hosted /tmp vs /var/task)
+          dirs,
+          store,
+        },
+      }),
       20_000,
-      "Cursor Agent.send"
+      "Cursor Agent.create"
     );
 
-    const streamWork = (async () => {
-      for await (const event of run.stream()) {
-        if (event.type === "tool_call") {
-          callCounter += 1;
-          const rawArgs = (event as { args?: unknown }).args;
-          const rawResult = (event as { result?: unknown }).result;
-          toolEvents.push({
-            callId: String(
-              (event as { call_id?: string }).call_id || `cursor_${callCounter}`
-            ),
-            name: String((event as { name?: string }).name || "tool"),
-            status:
-              (event as { status?: string }).status === "completed"
-                ? "completed"
-                : (event as { status?: string }).status === "error"
-                  ? "error"
-                  : "started",
-            args: redactValue(rawArgs) as ToolEvent["args"],
-            result: redactValue(rawResult),
-            timestamp: Date.now(),
-          });
-        }
-      }
-      return run.wait();
-    })();
-
-    const result = await withTimeout(
-      streamWork,
-      CURSOR_RUN_TIMEOUT_MS,
-      "Cursor Agent 执行"
-    );
-
-    if (result.status === "error") {
-      const raw = result.error?.message || "未知错误";
-      if (/Custom system prompt is not enabled|system prompt/i.test(raw)) {
-        throw new Error(
-          "当前 Cursor 账号未开通自定义 system prompt。本实验室已避免使用 systemPrompt；请更新代码后重试。也可改用 OpenAI-compatible Provider。"
-        );
-      }
-      throw new Error(`Cursor SDK 运行失败：${redactText(raw)}`);
-    }
-
-    const finalAnswerRaw =
-      typeof result.result === "string" && result.result.trim()
-        ? result.result
-        : "（Cursor Agent 未返回文本结果，请检查工具产物文件）";
-    const finalAnswer = redactText(finalAnswerRaw);
-
-    return {
-      finalAnswer,
-      toolEvents,
-      iterations: Math.max(1, toolEvents.length || 1),
-      contextLength: message.length,
-      responseLength: finalAnswer.length,
-    };
-  } finally {
     try {
-      await agent.close?.();
-    } catch {
-      // ignore
+      const run = await withTimeout(
+        agent.send(message),
+        20_000,
+        "Cursor Agent.send"
+      );
+
+      const streamWork = (async () => {
+        for await (const event of run.stream()) {
+          if (event.type === "tool_call") {
+            callCounter += 1;
+            const rawArgs = (event as { args?: unknown }).args;
+            const rawResult = (event as { result?: unknown }).result;
+            toolEvents.push({
+              callId: String(
+                (event as { call_id?: string }).call_id || `cursor_${callCounter}`
+              ),
+              name: String((event as { name?: string }).name || "tool"),
+              status:
+                (event as { status?: string }).status === "completed"
+                  ? "completed"
+                  : (event as { status?: string }).status === "error"
+                    ? "error"
+                    : "started",
+              args: redactValue(rawArgs) as ToolEvent["args"],
+              result: redactValue(rawResult),
+              timestamp: Date.now(),
+            });
+          }
+        }
+        return run.wait();
+      })();
+
+      const result = await withTimeout(
+        streamWork,
+        CURSOR_RUN_TIMEOUT_MS,
+        "Cursor Agent 执行"
+      );
+
+      if (result.status === "error") {
+        const raw = result.error?.message || "未知错误";
+        if (/Custom system prompt is not enabled|system prompt/i.test(raw)) {
+          throw new Error(
+            "当前 Cursor 账号未开通自定义 system prompt。本实验室已避免使用 systemPrompt；请更新代码后重试。也可改用 OpenAI-compatible Provider。"
+          );
+        }
+        throw new Error(`Cursor SDK 运行失败：${redactText(raw)}`);
+      }
+
+      const finalAnswerRaw =
+        typeof result.result === "string" && result.result.trim()
+          ? result.result
+          : "（Cursor Agent 未返回文本结果，请检查工具产物文件）";
+      const finalAnswer = redactText(finalAnswerRaw);
+
+      return {
+        finalAnswer,
+        toolEvents,
+        iterations: Math.max(1, toolEvents.length || 1),
+        contextLength: message.length,
+        responseLength: finalAnswer.length,
+      };
+    } finally {
+      try {
+        await agent.close?.();
+      } catch {
+        // ignore
+      }
     }
-  }
+  });
 }
 
 // Keep max iterations env visible for UI even though Cursor manages its own loop
