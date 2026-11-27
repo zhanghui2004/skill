@@ -1,5 +1,6 @@
 import fs from "fs/promises";
 import path from "path";
+import { hasDatabase, sql } from "./db";
 import { getRunsDir } from "./paths";
 import type { RunRecord, RunResponse } from "./types";
 
@@ -25,29 +26,35 @@ export function resolveRunRecordPath(runId: string): string {
   return file;
 }
 
-export async function saveRunRecord(
-  record: RunRecord
-): Promise<string> {
-  const dir = getRunsDir();
-  await fs.mkdir(dir, { recursive: true });
-  const file = resolveRunRecordPath(record.runId);
-  // Ensure no API keys sneak into persisted JSON
-  const safe = JSON.parse(
+function scrubRecord(record: RunRecord): RunRecord {
+  return JSON.parse(
     JSON.stringify(record, (k, v) => {
-      if (typeof k === "string" && /api[_-]?key|authorization|secret|token/i.test(k)) {
+      if (
+        typeof k === "string" &&
+        /api[_-]?key|authorization|secret|token/i.test(k)
+      ) {
         return undefined;
       }
-      if (typeof v === "string" && /sk-[a-zA-Z0-9]{10,}|crsr_[a-zA-Z0-9]+/i.test(v)) {
+      if (
+        typeof v === "string" &&
+        /sk-[a-zA-Z0-9]{10,}|crsr_[a-zA-Z0-9]+/i.test(v)
+      ) {
         return "[redacted]";
       }
       return v;
     })
-  );
-  await fs.writeFile(file, JSON.stringify(safe, null, 2), "utf8");
+  ) as RunRecord;
+}
+
+async function saveRunRecordFile(record: RunRecord): Promise<string> {
+  const dir = getRunsDir();
+  await fs.mkdir(dir, { recursive: true });
+  const file = resolveRunRecordPath(record.runId);
+  await fs.writeFile(file, JSON.stringify(record, null, 2), "utf8");
   return file;
 }
 
-export async function loadRunRecord(runId: string): Promise<RunRecord | null> {
+async function loadRunRecordFile(runId: string): Promise<RunRecord | null> {
   try {
     const file = resolveRunRecordPath(runId);
     const raw = await fs.readFile(file, "utf8");
@@ -57,7 +64,75 @@ export async function loadRunRecord(runId: string): Promise<RunRecord | null> {
   }
 }
 
+/**
+ * Durable when DATABASE_URL is set (shared Postgres across serverless instances).
+ * Local/dev without DATABASE_URL keeps the filesystem under the writable root.
+ */
+export async function saveRunRecord(record: RunRecord): Promise<string> {
+  if (!RUN_ID_RE.test(record.runId)) {
+    throw new Error("无效的 runId");
+  }
+  const safe = scrubRecord(record);
+
+  if (hasDatabase()) {
+    await sql(
+      `insert into runs (run_id, payload, status, created_at, updated_at)
+       values ($1, $2::jsonb, $3, coalesce(($2::jsonb->>'createdAt')::timestamptz, now()), now())
+       on conflict (run_id) do update set
+         payload = excluded.payload,
+         status = excluded.status,
+         updated_at = now()`,
+      [safe.runId, JSON.stringify(safe), safe.status]
+    );
+    return `db:${safe.runId}`;
+  }
+
+  return saveRunRecordFile(safe);
+}
+
+export async function loadRunRecord(runId: string): Promise<RunRecord | null> {
+  if (!RUN_ID_RE.test(runId)) return null;
+
+  if (hasDatabase()) {
+    try {
+      const rows = await sql<{ payload: RunRecord }>(
+        `select payload from runs where run_id = $1`,
+        [runId]
+      );
+      if (!rows[0]) return null;
+      const payload = rows[0].payload;
+      // pg may already parse jsonb
+      if (typeof payload === "string") {
+        return JSON.parse(payload) as RunRecord;
+      }
+      return payload as RunRecord;
+    } catch {
+      return null;
+    }
+  }
+
+  return loadRunRecordFile(runId);
+}
+
 export async function listRunRecords(limit = 20): Promise<RunRecord[]> {
+  if (hasDatabase()) {
+    try {
+      const rows = await sql<{ payload: RunRecord }>(
+        `select payload from runs order by created_at desc limit $1`,
+        [limit]
+      );
+      return rows.map((r) => {
+        const payload = r.payload;
+        if (typeof payload === "string") {
+          return JSON.parse(payload) as RunRecord;
+        }
+        return payload as RunRecord;
+      });
+    } catch {
+      return [];
+    }
+  }
+
   try {
     const dir = getRunsDir();
     const files = (await fs.readdir(dir))
