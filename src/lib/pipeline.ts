@@ -443,6 +443,7 @@ export async function continuePipelineExecute(runId: string): Promise<void> {
       error: "缺少 selectedSkill",
       prompt: record.prompt,
       mode: record.mode,
+      createdAt: record.createdAt,
     });
     return;
   }
@@ -466,6 +467,7 @@ export async function continuePipelineExecute(runId: string): Promise<void> {
       error: `无法加载 Skill「${selectedSkill}」。`,
       prompt: record.prompt,
       mode: record.mode,
+      createdAt: record.createdAt,
     });
     return;
   }
@@ -555,6 +557,7 @@ export async function continuePipelineExecute(runId: string): Promise<void> {
     error,
     prompt: record.prompt,
     mode: record.mode,
+    createdAt: record.createdAt,
   });
 }
 
@@ -618,6 +621,7 @@ async function persist(input: {
   error?: string;
   prompt: string;
   mode: RunMode;
+  createdAt?: string;
 }): Promise<RunResponse> {
   const record: RunRecord = {
     runId: input.runId,
@@ -631,7 +635,7 @@ async function persist(input: {
     error: input.error,
     prompt: input.prompt,
     mode: input.mode,
-    createdAt: new Date().toISOString(),
+    createdAt: input.createdAt ?? new Date().toISOString(),
   };
   await saveRunRecord(record);
   return {

@@ -2,8 +2,8 @@ import type { NextConfig } from "next";
 import path from "path";
 
 const nextConfig: NextConfig = {
-  // @cursor/sdk uses Node APIs; keep it external for App Router API routes
-  serverExternalPackages: ["@cursor/sdk"],
+  // @cursor/sdk / pg use Node APIs; keep them external for App Router API routes
+  serverExternalPackages: ["@cursor/sdk", "pg"],
   // Include teaching skills in the serverless file trace (runtime fs.readdir).
   // Prefer non-hidden bundled-skills/; also keep .cursor/skills for local Cursor.
   outputFileTracingIncludes: {
