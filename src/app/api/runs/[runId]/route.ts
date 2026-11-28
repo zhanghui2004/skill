@@ -34,7 +34,9 @@ export async function GET(
       return json(
         {
           error: redactText(
-            `未授权（HTTP ${viewer.status}）：${text.slice(0, 200) || "需要登录"}`
+            viewer.status === 401 || viewer.status === 403
+              ? "未登录或会话已过期，请刷新页面后重试。"
+              : `未授权（HTTP ${viewer.status}）：${text.slice(0, 200) || "需要登录"}`
           ),
         },
         viewer.status === 401 || viewer.status === 403 ? viewer.status : 401

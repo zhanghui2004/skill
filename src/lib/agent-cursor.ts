@@ -8,7 +8,12 @@ import {
   getWritableRoot,
 } from "./paths";
 import { buildCursorUserMessage } from "./llm";
-import { redactText, redactValue, withScrubbedProcessEnv } from "./redact";
+import {
+  formatCursorAuthError,
+  redactText,
+  redactValue,
+  withScrubbedProcessEnv,
+} from "./redact";
 import type { ToolEvent } from "./types";
 
 /** Leave headroom under route maxDuration (120s) for JSON error responses. */
@@ -108,8 +113,11 @@ export async function runCursorAgent(options: {
 
   const dirs = pathResolveUnique([cwd, pkg]);
 
-  // Cursor shell inherits process.env; scrub host secrets for the whole SDK run.
-  return withScrubbedProcessEnv(async () => {
+  // Scrub DATABASE_URL etc. from process.env so shell children cannot read them.
+  // Reinject CURSOR_API_KEY for the SDK/local runtime (published apps bind
+  // SKILL_LAB_CURSOR_KEY only; children often expect CURSOR_API_KEY).
+  return withScrubbedProcessEnv(
+    async () => {
     const agent = await withTimeout(
       Agent.create({
         apiKey,
@@ -185,7 +193,10 @@ export async function runCursorAgent(options: {
             "当前 Cursor 账号未开通自定义 system prompt。本实验室已避免使用 systemPrompt；请更新代码后重试。也可改用 OpenAI-compatible Provider。"
           );
         }
-        throw new Error(`Cursor SDK 运行失败：${redactText(raw)}`);
+        const auth = formatCursorAuthError(raw);
+        throw new Error(
+          auth ?? `Cursor SDK 运行失败：${redactText(raw)}`
+        );
       }
 
       const finalAnswerRaw =
@@ -201,6 +212,11 @@ export async function runCursorAgent(options: {
         contextLength: message.length,
         responseLength: finalAnswer.length,
       };
+    } catch (e) {
+      const raw = e instanceof Error ? e.message : String(e);
+      const auth = formatCursorAuthError(raw);
+      if (auth) throw new Error(auth);
+      throw e;
     } finally {
       try {
         await agent.close?.();
@@ -208,7 +224,9 @@ export async function runCursorAgent(options: {
         // ignore
       }
     }
-  });
+  },
+    { reinject: { CURSOR_API_KEY: apiKey } }
+  );
 }
 
 // Keep max iterations env visible for UI even though Cursor manages its own loop

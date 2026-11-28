@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatCursorAuthError,
+  isHostSecretEnvKey,
   isSecretEnvKey,
   redactText,
   redactValue,
@@ -64,22 +66,45 @@ describe("redact", () => {
 
   it("isSecretEnvKey covers host DB and key prefixes", () => {
     expect(isSecretEnvKey("DATABASE_URL")).toBe(true);
+    expect(isHostSecretEnvKey("DATABASE_URL")).toBe(true);
+    expect(isHostSecretEnvKey("SKILL_LAB_CURSOR_KEY")).toBe(false);
     expect(isSecretEnvKey("PATH")).toBe(false);
     expect(isSecretEnvKey("HOME")).toBe(false);
   });
 
-  it("withScrubbedProcessEnv restores secrets after the callback", async () => {
-    const key = "DATABASE_URL";
-    const prev = process.env[key];
-    process.env[key] = "postgres://restore-me";
+  it("withScrubbedProcessEnv reinjects CURSOR_API_KEY while keeping DATABASE_URL scrubbed", async () => {
+    const dbKey = "DATABASE_URL";
+    const prevDb = process.env[dbKey];
+    const prevCursor = process.env.CURSOR_API_KEY;
+    const prevSkill = process.env.SKILL_LAB_CURSOR_KEY;
+    process.env[dbKey] = "postgres://restore-me";
+    process.env.SKILL_LAB_CURSOR_KEY = "skill-lab-key";
+    delete process.env.CURSOR_API_KEY;
     try {
-      await withScrubbedProcessEnv(async () => {
-        expect(process.env[key]).toBeUndefined();
-      });
-      expect(process.env[key]).toBe("postgres://restore-me");
+      await withScrubbedProcessEnv(
+        async () => {
+          expect(process.env[dbKey]).toBeUndefined();
+          expect(process.env.SKILL_LAB_CURSOR_KEY).toBeUndefined();
+          expect(process.env.CURSOR_API_KEY).toBe("reinjected-key");
+        },
+        { reinject: { CURSOR_API_KEY: "reinjected-key" } }
+      );
+      expect(process.env[dbKey]).toBe("postgres://restore-me");
+      expect(process.env.SKILL_LAB_CURSOR_KEY).toBe("skill-lab-key");
+      expect(process.env.CURSOR_API_KEY).toBeUndefined();
     } finally {
-      if (prev === undefined) delete process.env[key];
-      else process.env[key] = prev;
+      if (prevDb === undefined) delete process.env[dbKey];
+      else process.env[dbKey] = prevDb;
+      if (prevCursor === undefined) delete process.env.CURSOR_API_KEY;
+      else process.env.CURSOR_API_KEY = prevCursor;
+      if (prevSkill === undefined) delete process.env.SKILL_LAB_CURSOR_KEY;
+      else process.env.SKILL_LAB_CURSOR_KEY = prevSkill;
     }
+  });
+
+  it("formatCursorAuthError maps unauthorized to Chinese guidance", () => {
+    expect(formatCursorAuthError("unauthorized")).toMatch(/SKILL_LAB_CURSOR_KEY/);
+    expect(formatCursorAuthError("HTTP 401")).toMatch(/无效或未授权/);
+    expect(formatCursorAuthError("timeout")).toBeNull();
   });
 });
