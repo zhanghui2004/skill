@@ -3,17 +3,32 @@
 """Fetch an English blog URL and save Markdown under <domain>/<slug>.md.
 
 Windows-compatible (stdlib only). Exit non-zero on failure with clear stderr.
+
+SSRF policy: only public https:// URLs. Blocks loopback, RFC1918, link-local,
+cloud metadata, and re-validates every redirect hop.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+import socket
 import sys
 import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
+
+
+# Hostnames that must never be fetched (cloud metadata / internal DNS).
+_BLOCKED_HOSTS = {
+    "localhost",
+    "metadata.google.internal",
+    "metadata.google",
+    "kubernetes.default",
+    "kubernetes.default.svc",
+}
 
 
 class _TextExtractor(HTMLParser):
@@ -89,6 +104,75 @@ def html_to_markdown(url: str, html: str) -> str:
     return f"# {title}\n\nSource: {url}\n\n{body}\n"
 
 
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+        or (ip.version == 4 and ip in ipaddress.ip_network("169.254.0.0/16"))
+        or (ip.version == 6 and ip in ipaddress.ip_network("fc00::/7"))
+    )
+
+
+def assert_public_https_url(url: str) -> str:
+    """Raise ValueError unless url is https to a public internet host."""
+    raw = (url or "").strip()
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() != "https":
+        raise ValueError("仅允许 https:// 公网 URL（已拒绝 http 与其它协议）")
+    if parsed.username or parsed.password:
+        raise ValueError("URL 不得包含用户名或密码")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("URL 缺少主机名")
+    host_l = host.lower().rstrip(".")
+    if host_l in _BLOCKED_HOSTS or host_l.endswith(".localhost") or host_l.endswith(".local"):
+        raise ValueError(f"禁止访问内部主机：{host}")
+    if parsed.port not in (None, 443):
+        raise ValueError("仅允许 HTTPS 默认端口 443")
+
+    # Literal IP in the URL
+    try:
+        ip = ipaddress.ip_address(host_l)
+        if _is_blocked_ip(ip):
+            raise ValueError(f"禁止访问私有/元数据地址：{host}")
+        return raw
+    except ValueError as e:
+        if "禁止访问" in str(e):
+            raise
+        # not a literal IP — resolve DNS
+        pass
+
+    try:
+        infos = socket.getaddrinfo(host_l, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise ValueError(f"无法解析主机名：{host} ({e})") from e
+    if not infos:
+        raise ValueError(f"无法解析主机名：{host}")
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if _is_blocked_ip(ip):
+            raise ValueError(
+                f"主机 {host} 解析到私有/元数据地址（{ip}），已拒绝（防 SSRF）"
+            )
+    return raw
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect target against the public-https policy."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        assert_public_https_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
         print(
@@ -100,8 +184,10 @@ def main(argv: list[str]) -> int:
         return 2
 
     url = argv[1].strip()
-    if not re.match(r"^https?://", url, re.I):
-        print(f"错误: URL 必须以 http:// 或 https:// 开头：{url}", file=sys.stderr)
+    try:
+        url = assert_public_https_url(url)
+    except ValueError as e:
+        print(f"错误: {e} — {url}", file=sys.stderr)
         return 2
 
     req = urllib.request.Request(
@@ -112,12 +198,18 @@ def main(argv: list[str]) -> int:
         },
         method="GET",
     )
+    opener = urllib.request.build_opener(_SafeRedirectHandler)
 
     try:
-        with urllib.request.urlopen(req, timeout=45) as resp:
+        with opener.open(req, timeout=45) as resp:
             charset = resp.headers.get_content_charset() or "utf-8"
             html = resp.read().decode(charset, errors="replace")
             final_url = resp.geturl() or url
+            # Defense in depth: final URL after redirects must still be public https.
+            assert_public_https_url(final_url)
+    except ValueError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 2
     except urllib.error.HTTPError as e:
         print(f"抓取失败 HTTP {e.code}: {e.reason} — {url}", file=sys.stderr)
         return 1
